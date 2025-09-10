@@ -5,7 +5,7 @@ import {
   XAxis,
   YAxis,
   CartesianGrid,
-  Tooltip,
+  Tooltip as RechartsTooltip, // Renamed to avoid conflict
   Legend,
   ResponsiveContainer,
 } from "recharts";
@@ -19,324 +19,274 @@ import {
   CheckCircle,
   XCircle,
   Info,
+  BarChart,
+  Repeat,
+  Table,
+  HelpCircle,
+  Target,
+  UserCheck,
 } from "lucide-react";
 
-// Main App Component
+// Main Simplified App Component
 function App() {
-  // State variables for user inputs
-  const [loanAmount, setLoanAmount] = useState(2500000); // ₹25 Lakhs
-  const [interestRate, setInterestRate] = useState(8.5); // 8.5%
-  const [tenureYears, setTenureYears] = useState(20); // 20 years
-  const [extraCash, setExtraCash] = useState(100000); // ₹1 Lakh
-  const [investmentReturn, setInvestmentReturn] = useState(12); // 12%
-  const [taxRegime, setTaxRegime] = useState("old"); // 'old' or 'new'
-  const [isSelfOccupied, setIsSelfOccupied] = useState(true); // true or false
-  const [isJointLoan, setIsJointLoan] = useState(false); // true or false
-  const [taxSlab, setTaxSlab] = useState(30); // User's tax slab in percentage
+  // --- STATE MANAGEMENT ---
 
-  // State variable for calculation results
+  // --- Core Loan & Investment Inputs ---
+  const [loanAmount, setLoanAmount] = useState(5000000); // ₹50 Lakhs
+  const [interestRate, setInterestRate] = useState(9.0); // 9.0%
+  const [tenureYears, setTenureYears] = useState(20); // 20 years
+  const [extraCash, setExtraCash] = useState(500000); // ₹5 Lakhs
+  const [investmentReturn, setInvestmentReturn] = useState(12); // 12%
+  const [investmentType, setInvestmentType] = useState("equity"); // 'equity' or 'fd'
+
+  // --- Tax Inputs ---
+  const [taxRegime, setTaxRegime] = useState("old"); // 'old' or 'new'
+  const [taxSlab, setTaxSlab] = useState(30); // User's tax slab in percentage
+  const [used80C, setUsed80C] = useState(150000); // How much of 80C is already used
+
+  // --- Strategy Inputs ---
+  const [prepaymentMethod, setPrepaymentMethod] = useState("reduceTenure"); // 'reduceEmi' or 'reduceTenure'
+
+  // --- Calculation Results ---
   const [results, setResults] = useState(null);
 
-  // Constants for tax deductions
-  const SECTION_24B_SELF_OCCUPIED_LIMIT_PER_PERSON = 200000; // ₹2 Lakhs
-  const SECTION_80C_LIMIT = 150000; // ₹1.5 Lakhs
+  // --- CONSTANTS ---
+  const SECTION_24B_SOP_LIMIT = 200000;
+  const SECTION_80C_LIMIT = 150000;
+  const EQUITY_LTCG_TAX_RATE = 0.1; // 10%
+  const EQUITY_LTCG_EXEMPTION = 100000;
 
-  // Helper function to calculate EMI
-  const calculateEMI = useCallback((principal, annualRate, months) => {
-    if (principal <= 0 || annualRate <= 0 || months <= 0) return 0;
-    const monthlyRate = annualRate / 100 / 12;
+  // --- HELPER FUNCTIONS ---
+
+  const calculateEMI = useCallback((p, r, n) => {
+    if (p <= 0 || r <= 0 || n <= 0) return 0;
+    const monthlyRate = r / 100 / 12;
     return (
-      (principal * monthlyRate * Math.pow(1 + monthlyRate, months)) /
-      (Math.pow(1 + monthlyRate, months) - 1)
+      (p * monthlyRate * Math.pow(1 + monthlyRate, n)) /
+      (Math.pow(1 + monthlyRate, n) - 1)
     );
   }, []);
 
-  // Helper function to calculate future value of investment
-  const calculateFutureValue = useCallback(
-    (principal, annualReturnRate, months) => {
-      if (principal <= 0 || annualReturnRate < 0 || months <= 0)
-        return principal;
-      const monthlyReturnRate = annualReturnRate / 100 / 12;
-      return principal * Math.pow(1 + monthlyReturnRate, months);
+  const calculateNewTenure = useCallback(
+    (newPrincipal, originalEmi, annualRate) => {
+      if (newPrincipal <= 0 || originalEmi <= 0 || annualRate <= 0) return 0;
+      const monthlyRate = annualRate / 100 / 12;
+      if (originalEmi <= newPrincipal * monthlyRate) return Infinity;
+      const numerator = Math.log(
+        1 - (newPrincipal * monthlyRate) / originalEmi
+      );
+      const denominator = Math.log(1 + monthlyRate);
+      return Math.ceil(-numerator / denominator);
     },
     []
   );
 
-  // Helper function to calculate amortization schedule for annual tax deductions
-  const getAmortizationSchedule = useCallback(
-    (principal, annualRate, months) => {
-      const monthlyRate = annualRate / 100 / 12;
-      const emi = calculateEMI(principal, annualRate, months);
-      let balance = principal;
+  const generateFullAmortization = useCallback(
+    (principal, annualRate, months, emi) => {
+      if (principal <= 0 || emi <= 0) return [];
       const schedule = [];
-      let currentYearInterest = 0;
-      let currentYearPrincipal = 0;
-      let currentYear = 1;
-
+      let balance = principal;
+      const monthlyRate = annualRate / 100 / 12;
       for (let i = 1; i <= months; i++) {
         const interestForMonth = balance * monthlyRate;
-        const principalForMonth = emi - interestForMonth;
+        const principalForMonth = Math.max(0, emi - interestForMonth);
         balance -= principalForMonth;
-
-        currentYearInterest += interestForMonth;
-        currentYearPrincipal += principalForMonth;
-
-        if (i % 12 === 0 || i === months) {
-          // End of year or end of loan
-          schedule.push({
-            year: currentYear,
-            annualInterest: currentYearInterest,
-            annualPrincipal: currentYearPrincipal,
-            remainingBalance: balance, // Include remaining balance for clarity
-          });
-          currentYearInterest = 0;
-          currentYearPrincipal = 0;
-          currentYear++;
-        }
+        if (balance < 0) balance = 0;
+        schedule.push({
+          month: i,
+          interest: interestForMonth,
+          principal: principalForMonth,
+          totalPayment: emi,
+          endingBalance: balance,
+        });
+        if (balance === 0) break;
       }
       return schedule;
     },
-    [calculateEMI]
+    []
   );
 
-  // Main calculation logic
+  // --- MAIN CALCULATION LOGIC ---
   const analyzeLoan = useCallback(() => {
-    const currentLoanAmount = parseFloat(loanAmount);
-    const currentInterestRate = parseFloat(interestRate);
-    const currentTenureYears = parseFloat(tenureYears);
-    const currentExtraCash = parseFloat(extraCash);
-    const currentInvestmentReturn = parseFloat(investmentReturn);
-    const currentTaxSlab = parseFloat(taxSlab);
-    const totalMonths = currentTenureYears * 12;
+    // Parse inputs
+    const p = parseFloat(loanAmount);
+    const r = parseFloat(interestRate);
+    const n = parseFloat(tenureYears) * 12;
+    const cash = parseFloat(extraCash);
+    const invReturn = parseFloat(investmentReturn);
+    const slab = parseFloat(taxSlab) / 100;
+    const available80C = Math.max(0, SECTION_80C_LIMIT - parseFloat(used80C));
 
     // --- Scenario 1: Continue Loan & Invest Extra Cash ---
-    const originalEMI = calculateEMI(
-      currentLoanAmount,
-      currentInterestRate,
-      totalMonths
+    const originalEmi = calculateEMI(p, r, n);
+    const originalAmortization = generateFullAmortization(p, r, n, originalEmi);
+    const totalInterestOriginal = originalAmortization.reduce(
+      (acc, row) => acc + row.interest,
+      0
     );
-    const totalInterestOriginal = originalEMI * totalMonths - currentLoanAmount;
-    const futureValueOfInvestment = calculateFutureValue(
-      currentExtraCash,
-      currentInvestmentReturn,
-      totalMonths
-    );
-    const investmentGain = futureValueOfInvestment - currentExtraCash;
 
-    // Calculate tax benefits for original loan (Old Regime only)
-    let originalLoanTaxBenefit = 0;
-    let originalLoanTotalDeductibleInterest = 0;
-    let originalLoanTotalDeductiblePrincipal = 0;
-    let originalLoanFirstYearDeductibleInterest = 0;
-    let originalLoanFirstYearDeductiblePrincipal = 0;
-    let effective24bLimitOriginal = 0;
-
-    if (taxRegime === "old") {
-      const originalAmortization = getAmortizationSchedule(
-        currentLoanAmount,
-        currentInterestRate,
-        totalMonths
-      );
-
-      effective24bLimitOriginal = isSelfOccupied
-        ? isJointLoan
-          ? SECTION_24B_SELF_OCCUPIED_LIMIT_PER_PERSON * 2
-          : SECTION_24B_SELF_OCCUPIED_LIMIT_PER_PERSON
-        : originalAmortization[0]?.annualInterest || 0; // For rented, full interest is deductible (subject to 2L set-off)
-
-      originalAmortization.forEach((yearData, index) => {
-        let interestDeduction = yearData.annualInterest;
-        let principalDeduction = yearData.annualPrincipal;
-
-        // Apply 24(b) limit
-        if (isSelfOccupied) {
-          interestDeduction = Math.min(
-            interestDeduction,
-            effective24bLimitOriginal
-          );
-        }
-        // For rented property, full interest is deductible, but loss set-off is limited to 2L.
-        // The effective24bLimitOriginal for rented property is set to annualInterest to reflect full deductibility
-        // for calculation purposes, with the explanation clarifying the set-off limit.
-
-        // Apply 80C limit
-        principalDeduction = Math.min(principalDeduction, SECTION_80C_LIMIT);
-
-        originalLoanTotalDeductibleInterest += interestDeduction;
-        originalLoanTotalDeductiblePrincipal += principalDeduction;
-
-        if (index === 0) {
-          // Capture first year's deductible amounts
-          originalLoanFirstYearDeductibleInterest = interestDeduction;
-          originalLoanFirstYearDeductiblePrincipal = principalDeduction;
-        }
-      });
-      // Total tax benefit is the sum of deductible amounts multiplied by tax slab
-      originalLoanTaxBenefit =
-        (originalLoanTotalDeductibleInterest +
-          originalLoanTotalDeductiblePrincipal) *
-        (currentTaxSlab / 100);
+    // Calculate post-tax investment gain
+    const futureValue = cash * Math.pow(1 + invReturn / 100, tenureYears);
+    const investmentGain = futureValue - cash;
+    let postTaxInvestmentGain = 0;
+    let investmentTax = 0;
+    if (investmentType === "equity") {
+      const taxableGain = Math.max(0, investmentGain - EQUITY_LTCG_EXEMPTION);
+      investmentTax = taxableGain * EQUITY_LTCG_TAX_RATE;
+      postTaxInvestmentGain = investmentGain - investmentTax;
+    } else {
+      // 'fd'
+      investmentTax = investmentGain * slab;
+      postTaxInvestmentGain = investmentGain - investmentTax;
     }
+
+    // Calculate tax benefits for original loan (SOP only)
+    let originalLoanTaxBenefit = 0;
+    if (taxRegime === "old") {
+      let yearlyData = [];
+      let currentYear = 1;
+      originalAmortization.forEach((monthData, i) => {
+        if (!yearlyData[currentYear - 1])
+          yearlyData[currentYear - 1] = {
+            year: currentYear,
+            interest: 0,
+            principal: 0,
+          };
+        yearlyData[currentYear - 1].interest += monthData.interest;
+        yearlyData[currentYear - 1].principal += monthData.principal;
+        if ((i + 1) % 12 === 0) currentYear++;
+      });
+      yearlyData.forEach((year) => {
+        const principalDeduction = Math.min(year.principal, available80C);
+        const interestDeduction = Math.min(
+          year.interest,
+          SECTION_24B_SOP_LIMIT
+        );
+        const totalDeduction = principalDeduction + interestDeduction;
+        originalLoanTaxBenefit += totalDeduction * slab;
+      });
+    }
+
+    const netBenefitInvesting = postTaxInvestmentGain + originalLoanTaxBenefit;
 
     // --- Scenario 2: Prepay Loan ---
-    const newLoanAmount = currentLoanAmount - currentExtraCash;
-    let newEMI = 0;
-    let totalInterestAfterPrepay = 0;
+    const newLoanAmount = p - cash;
+    let newEmi = originalEmi;
+    let newTenureMonths = n;
     let interestSaved = 0;
+    let prepaidAmortization = [];
+    let prepaidLoanTaxBenefit = 0;
 
     if (newLoanAmount > 0) {
-      newEMI = calculateEMI(newLoanAmount, currentInterestRate, totalMonths);
-      totalInterestAfterPrepay = newEMI * totalMonths - newLoanAmount;
-      interestSaved = totalInterestOriginal - totalInterestAfterPrepay;
-    } else {
-      // Loan fully paid off
-      newEMI = 0;
-      totalInterestAfterPrepay = 0;
-      interestSaved = totalInterestOriginal; // All original interest is saved
-    }
-
-    // Calculate tax benefits for prepaid loan scenario (Old Regime only)
-    let prepaidLoanTaxBenefit = 0;
-    let prepaidLoanTotalDeductibleInterest = 0;
-    let prepaidLoanTotalDeductiblePrincipal = 0;
-    let prepaidLoanFirstYearDeductibleInterest = 0;
-    let prepaidLoanFirstYearDeductiblePrincipal = 0;
-    let effective24bLimitPrepaid = 0;
-
-    if (taxRegime === "old" && newLoanAmount > 0) {
-      const prepaidAmortization = getAmortizationSchedule(
+      if (prepaymentMethod === "reduceEmi") {
+        newEmi = calculateEMI(newLoanAmount, r, n);
+        newTenureMonths = n;
+      } else {
+        // 'reduceTenure'
+        newEmi = originalEmi;
+        newTenureMonths = calculateNewTenure(newLoanAmount, originalEmi, r);
+      }
+      prepaidAmortization = generateFullAmortization(
         newLoanAmount,
-        currentInterestRate,
-        totalMonths
+        r,
+        newTenureMonths,
+        newEmi
       );
+      const totalInterestAfterPrepay = prepaidAmortization.reduce(
+        (acc, row) => acc + row.interest,
+        0
+      );
+      interestSaved = totalInterestOriginal - totalInterestAfterPrepay;
 
-      effective24bLimitPrepaid = isSelfOccupied
-        ? isJointLoan
-          ? SECTION_24B_SELF_OCCUPIED_LIMIT_PER_PERSON * 2
-          : SECTION_24B_SELF_OCCUPIED_LIMIT_PER_PERSON
-        : prepaidAmortization[0]?.annualInterest || 0; // For rented, full interest is deductible (subject to 2L set-off)
-
-      prepaidAmortization.forEach((yearData, index) => {
-        let interestDeduction = yearData.annualInterest;
-        let principalDeduction = yearData.annualPrincipal;
-
-        if (isSelfOccupied) {
-          interestDeduction = Math.min(
-            interestDeduction,
-            effective24bLimitPrepaid
+      // Calculate tax benefit for prepaid loan (SOP only)
+      if (taxRegime === "old") {
+        let yearlyData = [];
+        let currentYear = 1;
+        prepaidAmortization.forEach((monthData, i) => {
+          if (!yearlyData[currentYear - 1])
+            yearlyData[currentYear - 1] = {
+              year: currentYear,
+              interest: 0,
+              principal: 0,
+            };
+          yearlyData[currentYear - 1].interest += monthData.interest;
+          yearlyData[currentYear - 1].principal += monthData.principal;
+          if ((i + 1) % 12 === 0) currentYear++;
+        });
+        yearlyData.forEach((year) => {
+          const principalDeduction = Math.min(year.principal, available80C);
+          const interestDeduction = Math.min(
+            year.interest,
+            SECTION_24B_SOP_LIMIT
           );
-        }
-        principalDeduction = Math.min(principalDeduction, SECTION_80C_LIMIT);
-
-        prepaidLoanTotalDeductibleInterest += interestDeduction;
-        prepaidLoanTotalDeductiblePrincipal += principalDeduction;
-
-        if (index === 0) {
-          // Capture first year's deductible amounts
-          prepaidLoanFirstYearDeductibleInterest = interestDeduction;
-          prepaidLoanFirstYearDeductiblePrincipal = principalDeduction;
-        }
-      });
-      prepaidLoanTaxBenefit =
-        (prepaidLoanTotalDeductibleInterest +
-          prepaidLoanTotalDeductiblePrincipal) *
-        (currentTaxSlab / 100);
-    } else if (taxRegime === "old" && newLoanAmount <= 0) {
-      // If loan is fully paid off, no more tax benefits from loan.
-      prepaidLoanTaxBenefit = 0;
-      prepaidLoanTotalDeductibleInterest = 0;
-      prepaidLoanTotalDeductiblePrincipal = 0;
-      prepaidLoanFirstYearDeductibleInterest = 0;
-      prepaidLoanFirstYearDeductiblePrincipal = 0;
-    }
-
-    // --- Net Result Comparison ---
-    // Total benefit from investing: Investment Gain + Tax Benefit from original loan
-    const netBenefitInvesting = investmentGain + originalLoanTaxBenefit;
-
-    // Total benefit from prepaying: Interest Saved + Tax Benefit from reduced loan
-    const netBenefitPrepaying = interestSaved + prepaidLoanTaxBenefit;
-
-    const betterOption =
-      netBenefitInvesting > netBenefitPrepaying ? "Invest" : "Prepay";
-
-    // Data for graph
-    const graphData = [];
-    let currentInvestmentValue = currentExtraCash;
-    let currentOriginalInterest = 0;
-    let currentPrepaidInterest = 0;
-
-    const monthlyReturnRate = currentInvestmentReturn / 100 / 12;
-    const originalMonthlyRate = currentInterestRate / 100 / 12;
-
-    let originalBalance = currentLoanAmount;
-    let prepaidBalance = newLoanAmount;
-
-    for (let i = 1; i <= totalMonths; i++) {
-      // Investment growth
-      currentInvestmentValue *= 1 + monthlyReturnRate;
-
-      // Original loan interest
-      if (originalBalance > 0) {
-        const interestThisMonthOriginal = originalBalance * originalMonthlyRate;
-        const principalThisMonthOriginal =
-          originalEMI - interestThisMonthOriginal;
-        originalBalance -= principalThisMonthOriginal;
-        currentOriginalInterest += interestThisMonthOriginal;
-      }
-
-      // Prepaid loan interest
-      if (prepaidBalance > 0 && newEMI > 0) {
-        const interestThisMonthPrepaid = prepaidBalance * originalMonthlyRate;
-        const principalThisMonthPrepaid = newEMI - interestThisMonthPrepaid;
-        prepaidBalance -= principalThisMonthPrepaid;
-        currentPrepaidInterest += interestThisMonthPrepaid;
-      } else if (newLoanAmount <= 0) {
-        // If loan was fully paid off initially
-        currentPrepaidInterest = 0;
-      }
-
-      if (i % 12 === 0 || i === totalMonths) {
-        // Plot yearly data
-        graphData.push({
-          year: Math.ceil(i / 12),
-          "Investment Value": parseFloat(currentInvestmentValue.toFixed(2)),
-          "Cumulative Interest (Original Loan)": parseFloat(
-            currentOriginalInterest.toFixed(2)
-          ),
-          "Cumulative Interest (Prepaid Loan)": parseFloat(
-            currentPrepaidInterest.toFixed(2)
-          ),
+          const totalDeduction = principalDeduction + interestDeduction;
+          prepaidLoanTaxBenefit += totalDeduction * slab;
         });
       }
+    } else {
+      // Loan fully paid off
+      newEmi = 0;
+      newTenureMonths = 0;
+      interestSaved = totalInterestOriginal;
+      prepaidLoanTaxBenefit = 0;
+    }
+    const netBenefitPrepaying = interestSaved + prepaidLoanTaxBenefit;
+
+    // --- Final Decision ---
+    const betterOption =
+      netBenefitInvesting > netBenefitPrepaying ? "Invest" : "Prepay";
+    const effectiveLoanRate = r * (1 - slab);
+
+    // --- Graph Data ---
+    const graphData = [];
+    const maxYears = Math.ceil(
+      Math.max(originalAmortization.length, prepaidAmortization.length) / 12
+    );
+    let cumulativeOriginalInterest = 0;
+    let cumulativePrepaidInterest = 0;
+    for (let year = 1; year <= maxYears; year++) {
+      if (year <= tenureYears) {
+        cumulativeOriginalInterest = originalAmortization
+          .slice(0, year * 12)
+          .reduce((acc, row) => acc + row.interest, 0);
+      }
+      if (year <= newTenureMonths / 12) {
+        cumulativePrepaidInterest = prepaidAmortization
+          .slice(0, year * 12)
+          .reduce((acc, row) => acc + row.interest, 0);
+      }
+      const investmentValueAtYear = cash * Math.pow(1 + invReturn / 100, year);
+      graphData.push({
+        year,
+        "Investment Value": parseFloat(investmentValueAtYear.toFixed(0)),
+        "Interest (Original)": parseFloat(
+          cumulativeOriginalInterest.toFixed(0)
+        ),
+        "Interest (Prepaid)": parseFloat(cumulativePrepaidInterest.toFixed(0)),
+      });
     }
 
+    // --- SET RESULTS ---
     setResults({
-      originalEMI: originalEMI,
-      newEMI: newEMI,
-      interestSaved: interestSaved,
-      investmentGain: investmentGain,
-      originalLoanTaxBenefit: originalLoanTaxBenefit,
-      prepaidLoanTaxBenefit: prepaidLoanTaxBenefit,
-      netBenefitInvesting: netBenefitInvesting,
-      netBenefitPrepaying: netBenefitPrepaying,
-      betterOption: betterOption,
-      graphData: graphData,
-      originalLoanTotalDeductibleInterest: originalLoanTotalDeductibleInterest,
-      originalLoanTotalDeductiblePrincipal:
-        originalLoanTotalDeductiblePrincipal,
-      prepaidLoanTotalDeductibleInterest: prepaidLoanTotalDeductibleInterest,
-      prepaidLoanTotalDeductiblePrincipal: prepaidLoanTotalDeductiblePrincipal,
-      originalLoanFirstYearDeductibleInterest:
-        originalLoanFirstYearDeductibleInterest,
-      originalLoanFirstYearDeductiblePrincipal:
-        originalLoanFirstYearDeductiblePrincipal,
-      prepaidLoanFirstYearDeductibleInterest:
-        prepaidLoanFirstYearDeductibleInterest,
-      prepaidLoanFirstYearDeductiblePrincipal:
-        prepaidLoanFirstYearDeductiblePrincipal,
-      effective24bLimitOriginal: effective24bLimitOriginal,
-      effective24bLimitPrepaid: effective24bLimitPrepaid,
+      originalEmi,
+      newEmi,
+      interestSaved,
+      investmentGain,
+      postTaxInvestmentGain,
+      originalLoanTaxBenefit,
+      prepaidLoanTaxBenefit,
+      netBenefitInvesting,
+      netBenefitPrepaying,
+      betterOption,
+      originalTenureMonths: n,
+      newTenureMonths,
+      effectiveLoanRate,
+      graphData,
+      originalAmortization,
+      prepaidAmortization,
+      investmentTax,
+      taxSlab,
+      investmentType,
     });
   }, [
     loanAmount,
@@ -345,628 +295,471 @@ function App() {
     extraCash,
     investmentReturn,
     taxRegime,
-    isSelfOccupied,
-    isJointLoan,
     taxSlab,
+    investmentType,
+    used80C,
+    prepaymentMethod,
     calculateEMI,
-    calculateFutureValue,
-    getAmortizationSchedule,
+    calculateNewTenure,
+    generateFullAmortization,
   ]);
 
-  // Run analysis when inputs change
   useEffect(() => {
     analyzeLoan();
   }, [analyzeLoan]);
+  const formatCurrency = (value) =>
+    value.toLocaleString("en-IN", { maximumFractionDigits: 0 });
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 to-black p-4 sm:p-8 font-inter text-gray-200">
-      <div className="max-w-6xl mx-auto bg-gray-800 shadow-xl rounded-2xl overflow-hidden border border-yellow-500/20">
+      <div className="max-w-7xl mx-auto bg-gray-800 shadow-xl rounded-2xl overflow-hidden border border-yellow-500/20">
         <header className="bg-gray-900 text-yellow-400 p-6 text-center rounded-t-2xl border-b border-yellow-500/30">
           <h1 className="text-3xl sm:text-4xl font-extrabold flex items-center justify-center gap-3">
-            <Home className="w-8 h-8 sm:w-10 sm:h-10 text-yellow-500" /> 1% Club
-            • Loan Prepay Advisor
+            <Home className="w-8 h-8 sm:w-10 sm:h-10 text-yellow-500" /> Loan
+            Prepayment Advisor
           </h1>
-          <p className="mt-2 text-lg sm:text-xl font-light text-gray-300">
-            Smart Home Loan Decision Advisor
-          </p>
         </header>
 
-        <div className="p-6 sm:p-8 grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Input Section */}
-          <div className="bg-gray-900 p-6 rounded-xl shadow-inner border border-gray-700">
+        <Introduction />
+
+        <div className="p-6 sm:p-8 grid grid-cols-1 lg:grid-cols-5 gap-8">
+          <div className="lg:col-span-2 bg-gray-900 p-6 rounded-xl shadow-inner border border-gray-700">
             <h2 className="text-2xl font-bold mb-6 text-yellow-400">
-              Your Financial Details
+              Your Financial Scenario
             </h2>
-
-            {/* Tax Regime */}
-            <div className="mb-6">
-              <label className="block text-gray-300 text-sm font-semibold mb-2 flex items-center">
-                <Info className="w-4 h-4 mr-2 text-yellow-500" /> Choose Tax
-                Regime:
-              </label>
-              <div className="flex space-x-4">
-                <label className="inline-flex items-center cursor-pointer">
-                  <input
-                    type="radio"
-                    name="taxRegime"
-                    value="old"
-                    checked={taxRegime === "old"}
-                    onChange={() => setTaxRegime("old")}
-                    className="form-radio h-5 w-5 text-yellow-500 rounded-full focus:ring-yellow-400 bg-gray-700 border-gray-600"
-                  />
-                  <span className="ml-2 text-gray-200 font-medium">
-                    Old Regime
-                  </span>
-                </label>
-                <label className="inline-flex items-center cursor-pointer">
-                  <input
-                    type="radio"
-                    name="taxRegime"
-                    value="new"
-                    checked={taxRegime === "new"}
-                    onChange={() => setTaxRegime("new")}
-                    className="form-radio h-5 w-5 text-yellow-500 rounded-full focus:ring-yellow-400 bg-gray-700 border-gray-600"
-                  />
-                  <span className="ml-2 text-gray-200 font-medium">
-                    New Regime
-                  </span>
-                </label>
-              </div>
-              {taxRegime === "new" && (
-                <p className="text-sm text-red-400 mt-2 flex items-center">
-                  <XCircle className="w-4 h-4 mr-1" /> New Tax Regime does NOT
-                  allow deductions like Section 24(b) or 80C.
-                </p>
-              )}
-            </div>
-
-            {/* Property and Loan Type */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
-              <label className="flex items-center cursor-pointer bg-gray-700 p-3 rounded-lg shadow-sm border border-gray-600">
-                <input
-                  type="checkbox"
-                  checked={isSelfOccupied}
-                  onChange={(e) => setIsSelfOccupied(e.target.checked)}
-                  className="form-checkbox h-5 w-5 text-yellow-500 rounded focus:ring-yellow-400 bg-gray-800 border-gray-600"
-                />
-                <span className="ml-3 text-gray-200 font-medium">
-                  Is the property Self-Occupied?
-                </span>
-              </label>
-              <label className="flex items-center cursor-pointer bg-gray-700 p-3 rounded-lg shadow-sm border border-gray-600">
-                <input
-                  type="checkbox"
-                  checked={isJointLoan}
-                  onChange={(e) => setIsJointLoan(e.target.checked)}
-                  className="form-checkbox h-5 w-5 text-yellow-500 rounded focus:ring-yellow-400 bg-gray-800 border-gray-600"
-                />
-                <span className="ml-3 text-gray-200 font-medium">
-                  Is it a Joint Loan with Co-owner?
-                </span>
-              </label>
-            </div>
-
-            {/* Input Fields */}
             <div className="space-y-4">
-              <div className="flex items-center bg-gray-700 p-3 rounded-lg shadow-sm border border-gray-600">
-                <DollarSign className="w-5 h-5 text-gray-400 mr-3" />
-                <label htmlFor="loanAmount" className="sr-only">
-                  Outstanding Loan Amount (₹)
-                </label>
-                <input
-                  type="number"
-                  id="loanAmount"
-                  value={loanAmount}
-                  onChange={(e) =>
-                    setLoanAmount(Math.max(0, parseFloat(e.target.value)))
-                  }
-                  className="flex-grow p-2 border-none focus:ring-0 rounded-md bg-gray-800 text-gray-200 font-medium"
-                  placeholder="Outstanding Loan Amount (₹)"
-                  aria-label="Outstanding Loan Amount"
-                />
-                <span className="text-gray-400">₹</span>
-              </div>
-
-              <div className="flex items-center bg-gray-700 p-3 rounded-lg shadow-sm border border-gray-600">
-                <Percent className="w-5 h-5 text-gray-400 mr-3" />
-                <label htmlFor="interestRate" className="sr-only">
-                  Interest Rate (%)
-                </label>
-                <input
-                  type="number"
-                  id="interestRate"
-                  value={interestRate}
-                  onChange={(e) =>
-                    setInterestRate(Math.max(0, parseFloat(e.target.value)))
-                  }
-                  className="flex-grow p-2 border-none focus:ring-0 rounded-md bg-gray-800 text-gray-200 font-medium"
-                  placeholder="Interest Rate (%)"
-                  step="0.1"
-                  aria-label="Interest Rate"
-                />
-                <span className="text-gray-400">%</span>
-              </div>
-
-              <div className="flex items-center bg-gray-700 p-3 rounded-lg shadow-sm border border-gray-600">
-                <Calendar className="w-5 h-5 text-gray-400 mr-3" />
-                <label htmlFor="tenureYears" className="sr-only">
-                  Remaining Tenure (Years)
-                </label>
-                <input
-                  type="number"
-                  id="tenureYears"
-                  value={tenureYears}
-                  onChange={(e) =>
-                    setTenureYears(Math.max(1, parseFloat(e.target.value)))
-                  }
-                  className="flex-grow p-2 border-none focus:ring-0 rounded-md bg-gray-800 text-gray-200 font-medium"
-                  placeholder="Remaining Tenure (Years)"
-                  aria-label="Remaining Tenure"
-                />
-                <span className="text-gray-400">Years</span>
-              </div>
-
-              <div className="flex items-center bg-gray-700 p-3 rounded-lg shadow-sm border border-gray-600">
-                <Wallet className="w-5 h-5 text-gray-400 mr-3" />
-                <label htmlFor="extraCash" className="sr-only">
-                  Extra Cash You Have (₹)
-                </label>
-                <input
-                  type="number"
-                  id="extraCash"
-                  value={extraCash}
-                  onChange={(e) =>
-                    setExtraCash(Math.max(0, parseFloat(e.target.value)))
-                  }
-                  className="flex-grow p-2 border-none focus:ring-0 rounded-md bg-gray-800 text-gray-200 font-medium"
-                  placeholder="Extra Cash You Have (₹)"
-                  aria-label="Extra Cash"
-                />
-                <span className="text-gray-400">₹</span>
-              </div>
-
-              <div className="flex items-center bg-gray-700 p-3 rounded-lg shadow-sm border border-gray-600">
-                <TrendingUp className="w-5 h-5 text-gray-400 mr-3" />
-                <label htmlFor="investmentReturn" className="sr-only">
-                  Expected Investment Return (%)
-                </label>
-                <input
-                  type="number"
-                  id="investmentReturn"
-                  value={investmentReturn}
-                  onChange={(e) =>
-                    setInvestmentReturn(Math.max(0, parseFloat(e.target.value)))
-                  }
-                  className="flex-grow p-2 border-none focus:ring-0 rounded-md bg-gray-800 text-gray-200 font-medium"
-                  placeholder="Expected Investment Return (%)"
-                  step="0.1"
-                  aria-label="Investment Return"
-                />
-                <span className="text-gray-400">%</span>
-              </div>
-
+              <InputGroup
+                icon={DollarSign}
+                label="Loan Amount (₹)"
+                value={loanAmount}
+                onChange={setLoanAmount}
+              />
+              <InputGroup
+                icon={Percent}
+                label="Interest Rate (%)"
+                value={interestRate}
+                onChange={setInterestRate}
+                step="0.05"
+              />
+              <InputGroup
+                icon={Calendar}
+                label="Remaining Tenure (Yrs)"
+                value={tenureYears}
+                onChange={setTenureYears}
+              />
+              <InputGroup
+                icon={Wallet}
+                label="Extra Cash to Deploy (₹)"
+                value={extraCash}
+                onChange={setExtraCash}
+              />
+              <InputGroup
+                icon={TrendingUp}
+                label="Expected Return (%)"
+                value={investmentReturn}
+                onChange={setInvestmentReturn}
+                step="0.5"
+              />
+              <RadioGroup
+                label="Investment Type"
+                name="investmentType"
+                value={investmentType}
+                onChange={setInvestmentType}
+                options={[
+                  { value: "equity", label: "Equity (Stocks/MF)" },
+                  { value: "fd", label: "Fixed Deposit" },
+                ]}
+              />
+              <RadioGroup
+                label="Tax Regime"
+                name="taxRegime"
+                value={taxRegime}
+                onChange={setTaxRegime}
+                options={[
+                  { value: "old", label: "Old Regime" },
+                  { value: "new", label: "New Regime" },
+                ]}
+              />
               {taxRegime === "old" && (
-                <div className="flex items-center bg-gray-700 p-3 rounded-lg shadow-sm border border-gray-600">
-                  <Percent className="w-5 h-5 text-gray-400 mr-3" />
-                  <label htmlFor="taxSlab" className="sr-only">
-                    Your Tax Slab (%)
-                  </label>
-                  <input
-                    type="number"
-                    id="taxSlab"
-                    value={taxSlab}
-                    onChange={(e) =>
-                      setTaxSlab(
-                        Math.max(0, Math.min(100, parseFloat(e.target.value)))
-                      )
-                    }
-                    className="flex-grow p-2 border-none focus:ring-0 rounded-md bg-gray-800 text-gray-200 font-medium"
-                    placeholder="Your Tax Slab (%)"
-                    step="1"
-                    aria-label="Tax Slab"
-                  />
-                  <span className="text-gray-400">%</span>
-                </div>
+                <InputGroup
+                  icon={Percent}
+                  label="Your Tax Slab (%)"
+                  value={taxSlab}
+                  onChange={setTaxSlab}
+                />
               )}
+              {taxRegime === "old" && (
+                <InputGroup
+                  icon={BarChart}
+                  label="Used 80C Limit (₹)"
+                  value={used80C}
+                  onChange={setUsed80C}
+                />
+              )}
+              <RadioGroup
+                label="Prepayment Method"
+                name="prepaymentMethod"
+                value={prepaymentMethod}
+                onChange={setPrepaymentMethod}
+                options={[
+                  { value: "reduceTenure", label: "Reduce Tenure" },
+                  { value: "reduceEmi", label: "Reduce EMI" },
+                ]}
+              />
             </div>
-
-            <button
-              onClick={analyzeLoan}
-              className="mt-8 w-full bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-bold py-3 px-6 rounded-xl shadow-lg transform transition duration-300 ease-in-out hover:scale-105 focus:outline-none focus:ring-4 focus:ring-yellow-400 focus:ring-opacity-50"
-            >
-              Analyze
-            </button>
           </div>
 
-          {/* Result Summary */}
-          <div className="bg-gray-900 p-6 rounded-xl shadow-lg border border-yellow-500/30">
+          <div className="lg:col-span-3 bg-gray-900 p-6 rounded-xl shadow-lg border border-yellow-500/30">
             <h2 className="text-2xl font-bold mb-6 text-yellow-400">
-              📊 Result Summary
+              📊 Analysis & Recommendation
             </h2>
             {results && (
               <div className="space-y-4">
-                <p className="text-lg flex justify-between items-center">
-                  <span className="font-semibold text-gray-300">Old EMI:</span>
-                  <span className="text-yellow-400">
-                    ₹
-                    {results.originalEMI.toLocaleString("en-IN", {
-                      maximumFractionDigits: 2,
-                    })}
-                  </span>
-                </p>
-                <p className="text-lg flex justify-between items-center">
-                  <span className="font-semibold text-gray-300">
-                    New EMI (after prepay ₹{extraCash.toLocaleString("en-IN")}):
-                  </span>
-                  <span className="text-yellow-400">
-                    ₹
-                    {results.newEMI.toLocaleString("en-IN", {
-                      maximumFractionDigits: 2,
-                    })}
-                  </span>
-                </p>
-                <p className="text-lg flex justify-between items-center">
-                  <span className="font-semibold text-green-400">
-                    🔻 Interest Saved over {tenureYears} yrs:
-                  </span>
-                  <span className="text-green-400 font-bold">
-                    ₹
-                    {results.interestSaved.toLocaleString("en-IN", {
-                      maximumFractionDigits: 2,
-                    })}
-                  </span>
-                </p>
-
-                {taxRegime === "old" && (
-                  <>
-                    <div className="border-t border-gray-700 pt-4 mt-4">
-                      <p className="text-lg font-semibold text-blue-400 mb-2">
-                        💡 Tax Benefits (Old Regime)
-                      </p>
-                      <p className="text-base flex justify-between items-center text-gray-300">
-                        <span>Effective Section 24(b) Limit (Original):</span>
-                        <span className="text-yellow-400">
-                          ₹
-                          {results.effective24bLimitOriginal.toLocaleString(
-                            "en-IN",
-                            { maximumFractionDigits: 2 }
-                          )}
-                        </span>
-                      </p>
-                      <p className="text-base flex justify-between items-center text-gray-300">
-                        <span>
-                          Annual Deductible Interest (Original - Sec 24b):
-                        </span>
-                        <span className="text-yellow-400">
-                          ₹
-                          {results.originalLoanFirstYearDeductibleInterest.toLocaleString(
-                            "en-IN",
-                            { maximumFractionDigits: 2 }
-                          )}
-                        </span>
-                      </p>
-                      <p className="text-base flex justify-between items-center text-gray-300">
-                        <span>
-                          Annual Deductible Principal (Original - Sec 80C):
-                        </span>
-                        <span className="text-yellow-400">
-                          ₹
-                          {results.originalLoanFirstYearDeductiblePrincipal.toLocaleString(
-                            "en-IN",
-                            { maximumFractionDigits: 2 }
-                          )}
-                        </span>
-                      </p>
-                      <p className="text-lg flex justify-between items-center mt-2">
-                        <span className="font-semibold text-blue-400">
-                          Total Tax Benefit (Original Loan):
-                        </span>
-                        <span className="text-blue-400 font-bold">
-                          ₹
-                          {results.originalLoanTaxBenefit.toLocaleString(
-                            "en-IN",
-                            { maximumFractionDigits: 2 }
-                          )}
-                        </span>
-                      </p>
-                    </div>
-
-                    {results.newLoanAmount > 0 && ( // Only show prepaid tax benefits if loan is not fully paid off
-                      <div className="border-t border-gray-700 pt-4 mt-4">
-                        <p className="text-lg font-semibold text-blue-400 mb-2">
-                          💡 Tax Benefits (Prepaid Loan)
-                        </p>
-                        <p className="text-base flex justify-between items-center text-gray-300">
-                          <span>Effective Section 24(b) Limit (Prepaid):</span>
-                          <span className="text-yellow-400">
-                            ₹
-                            {results.effective24bLimitPrepaid.toLocaleString(
-                              "en-IN",
-                              { maximumFractionDigits: 2 }
-                            )}
-                          </span>
-                        </p>
-                        <p className="text-base flex justify-between items-center text-gray-300">
-                          <span>
-                            Annual Deductible Interest (Prepaid - Sec 24b):
-                          </span>
-                          <span className="text-yellow-400">
-                            ₹
-                            {results.prepaidLoanFirstYearDeductibleInterest.toLocaleString(
-                              "en-IN",
-                              { maximumFractionDigits: 2 }
-                            )}
-                          </span>
-                        </p>
-                        <p className="text-base flex justify-between items-center text-gray-300">
-                          <span>
-                            Annual Deductible Principal (Prepaid - Sec 80C):
-                          </span>
-                          <span className="text-yellow-400">
-                            ₹
-                            {results.prepaidLoanFirstYearDeductiblePrincipal.toLocaleString(
-                              "en-IN",
-                              { maximumFractionDigits: 2 }
-                            )}
-                          </span>
-                        </p>
-                        <p className="text-lg flex justify-between items-center mt-2">
-                          <span className="font-semibold text-blue-400">
-                            Total Tax Benefit (Prepaid Loan):
-                          </span>
-                          <span className="text-blue-400 font-bold">
-                            ₹
-                            {results.prepaidLoanTaxBenefit.toLocaleString(
-                              "en-IN",
-                              { maximumFractionDigits: 2 }
-                            )}
-                          </span>
-                        </p>
-                      </div>
-                    )}
-                  </>
-                )}
-
-                <p className="text-lg flex justify-between items-center">
-                  <span className="font-semibold text-purple-400">
-                    📈 Investment Gain:
-                  </span>
-                  <span className="text-purple-400 font-bold">
-                    ₹
-                    {results.investmentGain.toLocaleString("en-IN", {
-                      maximumFractionDigits: 2,
-                    })}
-                  </span>
-                </p>
-
-                <div className="border-t border-gray-700 pt-4 mt-4">
-                  <p className="text-xl font-bold flex justify-between items-center">
-                    <span className="text-gray-200">Net Result:</span>
+                <div
+                  className={`p-4 rounded-lg text-center ${
+                    results.betterOption === "Invest"
+                      ? "bg-green-900/50 border-green-500"
+                      : "bg-red-900/50 border-red-500"
+                  } border`}
+                >
+                  <h3 className="text-2xl font-bold flex items-center justify-center gap-2">
                     {results.betterOption === "Invest" ? (
-                      <span className="text-green-400 flex items-center gap-2">
-                        <CheckCircle className="w-6 h-6" /> Better to INVEST
-                      </span>
+                      <CheckCircle className="text-green-400" />
                     ) : (
-                      <span className="text-red-400 flex items-center gap-2">
-                        <XCircle className="w-6 h-6" /> Better to PREPAY
-                      </span>
+                      <XCircle className="text-red-400" />
                     )}
-                  </p>
-                  <p className="text-sm text-gray-400 mt-2">
-                    (Considering: Investment Gain + Tax Benefit from Original
-                    Loan vs. Interest Saved + Tax Benefit from Prepaid Loan)
+                    Recommendation: {results.betterOption}
+                  </h3>
+                  <p className="mt-1 text-gray-300">
+                    Net benefit of <strong>Investing</strong> is{" "}
+                    <strong>
+                      ₹{formatCurrency(results.netBenefitInvesting)}
+                    </strong>{" "}
+                    vs. Net benefit of <strong>Prepaying</strong> is{" "}
+                    <strong>
+                      ₹{formatCurrency(results.netBenefitPrepaying)}
+                    </strong>
+                    .
                   </p>
                 </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                  <MetricCard
+                    title="Post-Tax Investment Gain"
+                    value={`₹${formatCurrency(results.postTaxInvestmentGain)}`}
+                    color="purple"
+                    tooltipText={`Gross Gain: ₹${formatCurrency(
+                      results.investmentGain
+                    )}\nTax Paid: ₹${formatCurrency(results.investmentTax)}\n(${
+                      results.investmentType === "equity"
+                        ? `10% LTCG`
+                        : `${results.taxSlab}% Slab Rate`
+                    })`}
+                  />
+                  <MetricCard
+                    title="Net Interest Saved"
+                    value={`₹${formatCurrency(results.interestSaved)}`}
+                    color="green"
+                    tooltipText="This is the total loan interest you avoid paying by reducing the principal amount upfront."
+                  />
+                  <MetricCard
+                    title="Tax Benefit (Continue Loan)"
+                    value={`₹${formatCurrency(results.originalLoanTaxBenefit)}`}
+                    color="blue"
+                    tooltipText="Total tax saved over the loan tenure from interest and principal deductions if you DON'T prepay."
+                  />
+                  <MetricCard
+                    title="Tax Benefit (Prepaid Loan)"
+                    value={`₹${formatCurrency(results.prepaidLoanTaxBenefit)}`}
+                    color="blue"
+                    tooltipText="Total tax saved on the remaining loan if you DO prepay. This is often lower as the loan amount is smaller."
+                  />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-gray-700">
+                  <div>
+                    <h4 className="font-semibold text-yellow-400">
+                      Original Loan
+                    </h4>
+                    <p>EMI: ₹{formatCurrency(results.originalEmi)}</p>
+                    <p>Tenure: {results.originalTenureMonths} months</p>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold text-yellow-400">
+                      Loan After Prepayment
+                    </h4>
+                    <p>New EMI: ₹{formatCurrency(results.newEmi)}</p>
+                    <p>
+                      New Tenure: {Math.ceil(results.newTenureMonths)} months (
+                      {(results.newTenureMonths / 12).toFixed(1)} yrs)
+                    </p>
+                  </div>
+                </div>
+                {taxRegime === "old" && (
+                  <div className="text-xs text-gray-400 pt-2 border-t border-gray-700">
+                    <Tooltip
+                      text={`Formula: ${interestRate}% * (1 - ${taxSlab}%)`}
+                    >
+                      <p className="cursor-help">
+                        Effective Loan Rate (after tax):{" "}
+                        <strong>{results.effectiveLoanRate.toFixed(2)}%</strong>{" "}
+                        (Nominal: {interestRate}%)
+                      </p>
+                    </Tooltip>
+                  </div>
+                )}
               </div>
             )}
-            {!results && (
-              <p className="text-gray-400">
-                Enter your details and click "Analyze" to see the results.
-              </p>
-            )}
           </div>
         </div>
 
-        {/* Explanation Section */}
-        <div className="p-6 sm:p-8 bg-gray-900 rounded-b-2xl border-t border-gray-700">
-          <h2 className="text-2xl font-bold mb-4 text-yellow-400">
-            Understanding the Results (For Newbies!)
-          </h2>
-          <div className="space-y-4 text-gray-300">
-            <p>
-              This tool helps you decide whether to use your extra cash to pay
-              off a part of your home loan (prepay) or to invest it elsewhere.
-              Let's break down what each part means:
-            </p>
-            <ul className="list-disc list-inside space-y-2">
-              <li>
-                <strong>Old EMI:</strong> This is your current monthly payment
-                for the home loan.
-              </li>
-              <li>
-                <strong>New EMI (after prepay):</strong> If you use your extra
-                cash to prepay, your outstanding loan amount reduces, and so
-                does your monthly payment (EMI).
-              </li>
-              <li>
-                <strong>Interest Saved:</strong> When you prepay, you reduce the
-                principal amount you owe. This means you'll pay less interest
-                over the remaining years of your loan. This is a direct saving!
-              </li>
-              <li>
-                <strong>Investment Gain:</strong> If you choose not to prepay
-                and instead invest your extra cash, this is how much profit you
-                could potentially make from that investment over the same
-                remaining loan tenure, based on your expected return rate.
-              </li>
-              {taxRegime === "old" && (
-                <>
-                  <li>
-                    <strong>Tax Benefit (Old Regime only):</strong> This is
-                    where it gets interesting! Under the Old Tax Regime, you can
-                    save taxes on your home loan:
-                    <ul className="list-disc list-inside ml-4 mt-1">
-                      <li>
-                        <strong>Section 24(b) - Interest Deduction:</strong> You
-                        can deduct the interest you pay on your home loan from
-                        your taxable income.
-                        <ul className="list-disc list-inside ml-6 mt-1">
-                          <li>
-                            For <strong>Self-Occupied Property</strong>, the
-                            maximum deduction is ₹
-                            {SECTION_24B_SELF_OCCUPIED_LIMIT_PER_PERSON.toLocaleString(
-                              "en-IN"
-                            )}{" "}
-                            per financial year.
-                          </li>
-                          <li>
-                            For <strong>Let-Out (Rented) Property</strong>, the
-                            entire interest can be deducted, but the "loss from
-                            house property" that you can set off against other
-                            income in a year is limited to ₹
-                            {SECTION_24B_SELF_OCCUPIED_LIMIT_PER_PERSON.toLocaleString(
-                              "en-IN"
-                            )}
-                            .
-                          </li>
-                          <li>
-                            If it's a <strong>Joint Loan with Co-owner</strong>{" "}
-                            and self-occupied, both co-owners can claim this
-                            deduction individually, effectively doubling the
-                            household's potential deduction (e.g., up to ₹
-                            {(
-                              SECTION_24B_SELF_OCCUPIED_LIMIT_PER_PERSON * 2
-                            ).toLocaleString("en-IN")}{" "}
-                            combined for self-occupied).
-                          </li>
-                        </ul>
-                      </li>
-                      <li>
-                        <strong>Section 80C - Principal Repayment:</strong> The
-                        principal amount you repay on your home loan is also
-                        eligible for a deduction, up to a maximum of ₹
-                        {SECTION_80C_LIMIT.toLocaleString("en-IN")} per
-                        financial year, combined with other 80C investments.
-                      </li>
-                    </ul>
-                    Your actual tax saving is this deductible amount multiplied
-                    by your tax slab (e.g., if you're in the 30% slab, ₹100 of
-                    deduction saves you ₹30 in tax).
-                  </li>
-                </>
-              )}
-              {taxRegime === "new" && (
-                <li>
-                  <strong>Tax Benefit (New Regime):</strong> Under the New Tax
-                  Regime, there are NO deductions allowed for home loan interest
-                  (Section 24b) or principal repayment (Section 80C).
-                </li>
-              )}
-              <li>
-                <strong>Net Result:</strong> This is the final comparison. We
-                add up the "Interest Saved" and the "Tax Benefit from Prepaid
-                Loan" to get the total benefit of prepaying. Then we compare it
-                with the "Investment Gain" plus the "Tax Benefit from Original
-                Loan". The option that gives you a higher overall financial
-                advantage is recommended.
-              </li>
-            </ul>
-            <p className="font-semibold text-yellow-400 mt-4">
-              In simple terms, we're weighing the guaranteed savings from
-              reducing your loan against the potential earnings from investing
-              your money, keeping in mind how taxes affect each choice!
-            </p>
-          </div>
-        </div>
-
-        {/* Graph Section */}
         {results && (
           <div className="p-6 sm:p-8 bg-gray-800 rounded-b-2xl border-t border-yellow-500/30">
-            <h2 className="text-2xl font-bold mb-6 text-yellow-400">
-              📈 Financial Trajectory Over Time
+            <h2 className="text-2xl font-bold mb-6 text-yellow-400 flex items-center gap-2">
+              <BarChart /> Financial Trajectory
             </h2>
-            <div className="h-80 sm:h-96 w-full">
+            <div className="h-80 w-full mb-8">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart
                   data={results.graphData}
                   margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
                 >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#4a4a4a" />{" "}
-                  {/* Darker grid */}
+                  <CartesianGrid strokeDasharray="3 3" stroke="#4a4a4a" />
                   <XAxis
                     dataKey="year"
+                    tick={{ fill: "#d1d5db" }}
                     label={{
                       value: "Year",
                       position: "insideBottom",
-                      offset: 0,
+                      offset: -5,
                       fill: "#d1d5db",
                     }}
-                    tick={{ fill: "#d1d5db" }}
                   />
                   <YAxis
+                    tick={{ fill: "#d1d5db" }}
                     tickFormatter={(value) =>
                       `₹${(value / 100000).toFixed(0)}L`
                     }
-                    label={{
-                      value: "Amount (₹)",
-                      angle: -90,
-                      position: "insideLeft",
-                      fill: "#d1d5db",
-                    }}
-                    tick={{ fill: "#d1d5db" }}
                   />
-                  <Tooltip
-                    formatter={(value) =>
-                      `₹${value.toLocaleString("en-IN", {
-                        maximumFractionDigits: 2,
-                      })}`
-                    }
+                  <RechartsTooltip
                     contentStyle={{
                       backgroundColor: "#333",
                       borderColor: "#555",
                       color: "#eee",
                     }}
-                    labelStyle={{ color: "#yellow-400" }}
+                    formatter={(value) => `₹${formatCurrency(value)}`}
                   />
-                  <Legend wrapperStyle={{ color: "#d1d5db" }} />{" "}
-                  {/* Legend text color */}
+                  <Legend wrapperStyle={{ color: "#d1d5db" }} />
                   <Line
                     type="monotone"
                     dataKey="Investment Value"
                     stroke="#facc15"
-                    activeDot={{ r: 8 }}
                     strokeWidth={2}
-                  />{" "}
-                  {/* Gold */}
+                  />
                   <Line
                     type="monotone"
-                    dataKey="Cumulative Interest (Original Loan)"
+                    dataKey="Interest (Original)"
                     stroke="#ef4444"
                     strokeDasharray="5 5"
                     strokeWidth={2}
-                  />{" "}
-                  {/* Red for original interest */}
+                  />
                   <Line
                     type="monotone"
-                    dataKey="Cumulative Interest (Prepaid Loan)"
+                    dataKey="Interest (Prepaid)"
                     stroke="#22c55e"
-                    strokeDasharray="3 3"
                     strokeWidth={2}
-                  />{" "}
-                  {/* Green for prepaid interest */}
+                  />
                 </LineChart>
               </ResponsiveContainer>
             </div>
-            <p className="text-sm text-gray-400 mt-4 text-center">
-              This graph shows how your investment grows over time versus the
-              cumulative interest you would pay on your original loan and the
-              loan after prepayment.
-            </p>
+            <h2 className="text-2xl font-bold mb-6 text-yellow-400 flex items-center gap-2">
+              <Table /> Amortization Schedules
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <AmortizationTable
+                title="Original Loan Schedule"
+                data={results.originalAmortization}
+              />
+              <AmortizationTable
+                title="Prepaid Loan Schedule"
+                data={results.prepaidAmortization}
+              />
+            </div>
           </div>
         )}
       </div>
     </div>
   );
 }
+
+// --- SUB-COMPONENTS ---
+
+const Introduction = () => (
+  <div className="p-6 sm:p-8 bg-gray-800/50 border-y border-yellow-500/20">
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-8 text-center">
+      <div className="flex flex-col items-center">
+        <div className="flex items-center justify-center w-16 h-16 rounded-full bg-yellow-500/10 border-2 border-yellow-500 text-yellow-400 mb-3">
+          <Target size={32} />
+        </div>
+        <h3 className="text-xl font-bold text-yellow-400 mb-2">
+          WHAT is this?
+        </h3>
+        <p className="text-gray-400 text-sm">
+          A tool to resolve a common financial dilemma: Should you use extra
+          cash to prepay your home loan or invest it for higher returns?
+        </p>
+      </div>
+      <div className="flex flex-col items-center">
+        <div className="flex items-center justify-center w-16 h-16 rounded-full bg-yellow-500/10 border-2 border-yellow-500 text-yellow-400 mb-3">
+          <TrendingUp size={32} />
+        </div>
+        <h3 className="text-xl font-bold text-yellow-400 mb-2">WHY use it?</h3>
+        <p className="text-gray-400 text-sm">
+          It quantifies the "opportunity cost". Prepaying gives guaranteed
+          savings, while investing offers potential for wealth creation. This
+          tool compares the net financial impact of both choices, including
+          complex tax implications.
+        </p>
+      </div>
+      <div className="flex flex-col items-center">
+        <div className="flex items-center justify-center w-16 h-16 rounded-full bg-yellow-500/10 border-2 border-yellow-500 text-yellow-400 mb-3">
+          <UserCheck size={32} />
+        </div>
+        <h3 className="text-xl font-bold text-yellow-400 mb-2">
+          WHO is it for?
+        </h3>
+        <p className="text-gray-400 text-sm">
+          Any homeowner with a lump sum amount (from a bonus, sale, etc.) who
+          wants to make a data-driven decision to either reduce their debt or
+          grow their wealth.
+        </p>
+      </div>
+    </div>
+  </div>
+);
+
+const Tooltip = ({ text, children }) => (
+  <div className="relative group">
+    {children}
+    <div className="absolute bottom-full mb-2 w-max max-w-xs p-3 bg-gray-900 text-white text-xs rounded-lg shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-300 z-10 border border-yellow-500 whitespace-pre-wrap">
+      {text}
+    </div>
+  </div>
+);
+
+const InputGroup = ({ icon: Icon, label, value, onChange, step = 1 }) => (
+  <div>
+    <label className="block text-gray-300 text-sm font-semibold mb-2 flex items-center">
+      <Icon className="w-4 h-4 mr-2 text-yellow-500" /> {label}
+    </label>
+    <input
+      type="number"
+      value={value}
+      onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+      step={step}
+      className="w-full p-2 border-none focus:ring-2 focus:ring-yellow-500 rounded-md bg-gray-800 text-gray-200 font-medium"
+    />
+  </div>
+);
+
+const RadioGroup = ({ label, name, value, onChange, options }) => (
+  <div>
+    <label className="block text-gray-300 text-sm font-semibold mb-2 flex items-center">
+      <Info className="w-4 h-4 mr-2 text-yellow-500" /> {label}
+    </label>
+    <div className="flex flex-wrap gap-2">
+      {options.map((opt) => (
+        <label
+          key={opt.value}
+          className={`inline-flex items-center cursor-pointer p-2 rounded-md transition-colors duration-200 ${
+            value === opt.value
+              ? "bg-yellow-500 text-black"
+              : "bg-gray-700 hover:bg-gray-600"
+          }`}
+        >
+          <input
+            type="radio"
+            name={name}
+            value={opt.value}
+            checked={value === opt.value}
+            onChange={(e) => onChange(e.target.value)}
+            className="sr-only"
+          />
+          <span className="font-medium text-sm">{opt.label}</span>
+        </label>
+      ))}
+    </div>
+  </div>
+);
+
+const MetricCard = ({ title, value, color, tooltipText }) => {
+  const colors = {
+    purple: "from-purple-600/20 to-gray-800 border-purple-500 text-purple-400",
+    green: "from-green-600/20 to-gray-800 border-green-500 text-green-400",
+    blue: "from-blue-600/20 to-gray-800 border-blue-500 text-blue-400",
+  };
+  return (
+    <div
+      className={`p-4 bg-gradient-to-br ${colors[color]} border rounded-lg relative group`}
+    >
+      <div className="flex items-center justify-between">
+        <h4 className="font-semibold text-gray-300">{title}</h4>
+        {tooltipText && (
+          <Tooltip text={tooltipText}>
+            <HelpCircle className="w-4 h-4 text-gray-500 cursor-help" />
+          </Tooltip>
+        )}
+      </div>
+      <p className="text-2xl font-bold">{value}</p>
+    </div>
+  );
+};
+
+const AmortizationTable = ({ title, data }) => (
+  <div>
+    <h3 className="text-xl font-semibold mb-2 text-yellow-500">{title}</h3>
+    {data.length > 0 ? (
+      <div className="h-96 overflow-y-auto bg-gray-900 rounded-lg p-2 border border-gray-700">
+        <table className="w-full text-xs text-left">
+          <thead className="sticky top-0 bg-gray-900">
+            <tr>
+              <th className="p-2">Month</th>
+              <th className="p-2">Interest</th>
+              <th className="p-2">Principal</th>
+              <th className="p-2">Balance</th>
+            </tr>
+          </thead>
+          <tbody className="text-gray-400">
+            {data.map((row) => (
+              <tr key={row.month} className="border-t border-gray-800">
+                <td className="p-2">{row.month}</td>
+                <td className="p-2">
+                  ₹
+                  {row.interest.toLocaleString("en-IN", {
+                    maximumFractionDigits: 0,
+                  })}
+                </td>
+                <td className="p-2">
+                  ₹
+                  {row.principal.toLocaleString("en-IN", {
+                    maximumFractionDigits: 0,
+                  })}
+                </td>
+                <td className="p-2 font-semibold text-gray-300">
+                  ₹
+                  {row.endingBalance.toLocaleString("en-IN", {
+                    maximumFractionDigits: 0,
+                  })}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    ) : (
+      <p className="text-gray-500">
+        Loan is fully paid off. No schedule to show.
+      </p>
+    )}
+  </div>
+);
 
 export default App;
